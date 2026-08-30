@@ -1,0 +1,82 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from src.services.repository_service import RepositoryService
+from src.storage.repository_store import RepositoryStore
+
+
+class FakeResticService:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls: list[tuple[str, str, Path]] = []
+        self.error = error
+
+    def initialize_repository(self, directory: str, password: str, key_path: Path) -> None:
+        self.calls.append((directory, password, key_path))
+        if self.error:
+            raise self.error
+
+
+class RepositoryServiceTest(unittest.TestCase):
+    def test_create_and_list_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = RepositoryStore(root / "app.db")
+            store.initialize()
+            restic = FakeResticService()
+            service = RepositoryService(store, root / "keys", restic)
+
+            created = service.create_repository("문서", "C:/Backup", "secret")
+
+            self.assertEqual(created.name, "문서")
+            self.assertEqual(service.list_repositories(), [created])
+            key_value = Path(created.key).read_text(encoding="utf-8")
+            self.assertNotEqual(key_value, "secret")
+            self.assertGreaterEqual(len(key_value), 48)
+            self.assertEqual(restic.calls, [("C:/Backup", "secret", Path(created.key))])
+
+    def test_rejects_empty_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = RepositoryStore(root / "app.db")
+            store.initialize()
+            service = RepositoryService(store, root / "keys", FakeResticService())
+            with self.assertRaises(ValueError):
+                service.create_repository("", "C:/Backup", "secret")
+
+    def test_removes_key_and_does_not_save_when_restic_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = RepositoryStore(root / "app.db")
+            store.initialize()
+            service = RepositoryService(
+                store, root / "keys", FakeResticService(RuntimeError("failed"))
+            )
+
+            with self.assertRaises(RuntimeError):
+                service.create_repository("문서", "C:/Backup", "secret")
+
+            self.assertEqual(store.list_all(), [])
+            self.assertEqual(list((root / "keys").iterdir()), [])
+
+    def test_rejects_duplicate_name_before_running_restic(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = RepositoryStore(root / "app.db")
+            store.initialize()
+            first_restic = FakeResticService()
+            RepositoryService(store, root / "keys", first_restic).create_repository(
+                "문서", "C:/Backup", "secret"
+            )
+            second_restic = FakeResticService()
+
+            with self.assertRaisesRegex(ValueError, "이미 사용 중"):
+                RepositoryService(store, root / "keys", second_restic).create_repository(
+                    "문서", "D:/Backup", "another-secret"
+                )
+
+            self.assertEqual(second_restic.calls, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

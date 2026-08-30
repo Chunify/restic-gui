@@ -1,0 +1,62 @@
+.progress-dialog {
+  text-align: center;
+}
+
+.progress-dialog p {
+  margin: 12px 0 22px;
+  color: #6a756e;
+}
+
+.progress-track {
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e2e9e4;
+}
+
+.progress-bar {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: #2f8050;
+  transition: width .35s ease;
+}
+
+.progress-dialog.done .progress-bar {
+  width: 100%;
+  animation: none;
+}
+
+.progress-dialog.failed .progress-bar {
+  width: 100%;
+  background: #b84840;
+  animation: none;
+}
+
+.progress-dialog button {
+  margin-top: 24px;
+}
+
+#progress-percent {
+  display: block;
+  margin-top: 12px;
+  color: #24623f;
+  font-size: 20px;
+}
+
+.progress-dialog .progress-detail,
+.progress-dialog .progress-file {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.progress-file {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes backup-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(270%); }
+}
