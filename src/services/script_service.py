@@ -21,6 +21,10 @@ class ScriptService:
     def master_script(self) -> Path:
         return self.data_directory / "backup-master-script.cmd"
 
+    @property
+    def progress_file(self) -> Path:
+        return self.data_directory / "backup-progress.jsonl"
+
     def regenerate_master(self) -> Path:
         scripts_directory = self.data_directory / "backup-scripts"
         scripts_directory.mkdir(parents=True, exist_ok=True)
@@ -28,9 +32,16 @@ class ScriptService:
             "@echo off",
             "setlocal",
             'set "SCRIPTS_DIR=%~dp0backup-scripts"',
+            'set "PROGRESS_FILE=%~dp0backup-progress.jsonl"',
+            'for /f %%i in (\'powershell -NoProfile -Command "Get-Date -Format yy-MM-dd"\') do set LOGDATE=%%i',
+            'set "LOG_FILE=%~dp0logs\\%LOGDATE%.log"',
+            'if not exist "%~dp0logs" mkdir "%~dp0logs"',
+            'if exist "%PROGRESS_FILE%" del /q "%PROGRESS_FILE%"',
             'for /f "delims=" %%F in (\'dir /b /a-d /on "%SCRIPTS_DIR%\\*.cmd" 2^>nul\') do (',
             '    call "%SCRIPTS_DIR%\\%%F"',
             ")",
+            'if exist "%PROGRESS_FILE%" powershell -NoProfile -Command "Get-Content -LiteralPath \'%PROGRESS_FILE%\' | Where-Object { $_ -notmatch \'message_type.*status\' } | Add-Content -LiteralPath \'%LOG_FILE%\' -Encoding utf8"',
+            'if exist "%PROGRESS_FILE%" del /q "%PROGRESS_FILE%"',
             "endlocal",
         ]
         self.data_directory.mkdir(parents=True, exist_ok=True)
@@ -51,8 +62,8 @@ class ScriptService:
         with self._state_lock:
             if self._backup_state.get("running"):
                 raise RuntimeError("수동 백업이 이미 실행 중입니다.")
-            log_path = self._today_log_path()
-            self._log_offset = log_path.stat().st_size if log_path.exists() else 0
+            self.progress_file.unlink(missing_ok=True)
+            self._log_offset = 0
             self._backup_state = {
                 "running": True, "status": "running", "percent": 0.0,
                 "files_done": 0, "total_files": 0, "bytes_done": 0,
@@ -82,11 +93,13 @@ class ScriptService:
         return self.data_directory / "logs" / f"{datetime.now():%y-%m-%d}.log"
 
     def _read_progress_log(self) -> None:
-        path = self._today_log_path()
+        path = self.progress_file
         if not path.exists():
             return
         try:
             with path.open("r", encoding="utf-8", errors="replace") as log:
+                if path.stat().st_size < self._log_offset:
+                    self._log_offset = 0
                 log.seek(self._log_offset)
                 content = log.read()
                 self._log_offset = log.tell()

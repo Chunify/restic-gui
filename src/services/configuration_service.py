@@ -19,10 +19,12 @@ class ConfigurationService:
                 "run_when_idle": False}
 
     def __init__(self, data_directory: Path, master_script: Path,
-                 runner: Callable[..., subprocess.CompletedProcess[str]] | None = None) -> None:
+                 runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+                 scheduler_applier: Callable[[dict[str, object]], None] | None = None) -> None:
         self.path = data_directory / "configuration.json"
         self.master_script = master_script
         self.runner = runner
+        self.scheduler_applier = scheduler_applier
 
     def load(self) -> dict[str, object]:
         if not self.path.exists():
@@ -43,13 +45,19 @@ class ConfigurationService:
             raise ValueError("자동 실행 주기는 1일 이상이어야 합니다.")
         clean = {"enabled": enabled, "run_at_startup": bool(values.get("run_at_startup")),
                  "interval_days": interval, "run_when_idle": bool(values.get("run_when_idle"))}
-        if enabled:
-            self._register(clean)
+        if self.scheduler_applier is not None:
+            self.scheduler_applier(clean)
         else:
-            self._delete()
+            self.apply_scheduler(clean)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
         return clean
+
+    def apply_scheduler(self, values: dict[str, object]) -> None:
+        if bool(values.get("enabled")):
+            self._register(values)
+        else:
+            self._delete()
 
     def _register(self, values: dict[str, object]) -> None:
         if self.runner is None:

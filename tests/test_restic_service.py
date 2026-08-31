@@ -43,6 +43,22 @@ class ResticServiceTest(unittest.TestCase):
                     "C:/Backup", "password", key_path
                 )
 
+    def test_adds_key_to_existing_repository_without_init(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            calls.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            key_path = Path(temporary_directory) / "repository.key"
+            key_path.write_text("random-key", encoding="utf-8")
+            ResticService(runner=runner).add_key("C:/Backup", "password", key_path)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0:5], ["restic", "key", "add", "--repo", "C:/Backup"])
+        self.assertNotIn("init", calls[0])
+
     def test_lists_snapshots_from_json(self) -> None:
         def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
             output = json.dumps([{"id": "abcdef123456", "short_id": "abcdef12",
@@ -53,6 +69,37 @@ class ResticServiceTest(unittest.TestCase):
         snapshots = ResticService(runner=runner).snapshots("C:/Repo", "C:/key")
         self.assertEqual(snapshots[0]["id"], "abcdef12")
         self.assertEqual(snapshots[0]["paths"], ["C:/Source"])
+
+    def test_large_snapshot_output_is_not_copied_to_log(self) -> None:
+        output = json.dumps([{"id": "a" * 64, "payload": "x" * 20_000}])
+
+        def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            logs = Path(temporary_directory) / "logs"
+            ResticService(runner=runner, logs_directory=logs).snapshots("C:/Repo", "C:/key")
+            content = next(logs.glob("*.log")).read_text(encoding="utf-8")
+
+        self.assertIn("출력", content)
+        self.assertIn("생략", content)
+        self.assertNotIn("x" * 100, content)
+
+    def test_restores_snapshot_to_selected_target(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            calls.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        ResticService(runner=runner).restore_snapshot(
+            "C:/Repo", "C:/key", "abcdef12", "D:/Restore"
+        )
+
+        self.assertEqual(calls, [[
+            "restic", "restore", "abcdef12", "--target", "D:/Restore",
+            "--repo", "C:/Repo", "--password-file", "C:/key",
+        ]])
 
 
 if __name__ == "__main__":

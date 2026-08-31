@@ -8,7 +8,8 @@ from src.services.script_service import ScriptService
 
 
 class BackupPolicyService:
-    FILE_FIELDS = ("exclude", "iexclude", "file_from", "exclude_larger_than")
+    FILE_FIELDS = ("exclude", "iexclude", "file_from")
+    SIZE_PATTERN = re.compile(r"\d+[kKmMgGtT]?")
 
     def __init__(self, store: RepositoryStore, data_directory: Path,
                  restic_executable: str = "restic") -> None:
@@ -39,6 +40,9 @@ class BackupPolicyService:
         forget_id = int(forget_policy_id) if forget_policy_id not in (None, "") else None
         if forget_id is not None and not self.store.get_forget_policy(forget_id):
             raise ValueError("Forget 정책을 찾을 수 없습니다.")
+        exclude_larger_than = str((file_contents or {}).get("exclude_larger_than", "")).strip()
+        if exclude_larger_than and not self.SIZE_PATTERN.fullmatch(exclude_larger_than):
+            raise ValueError("exclude-larger-than은 숫자와 선택적 단위(k, M, G, T)로 입력해 주세요. 예: 10M, 1T")
         paths: dict[str, str | None] = {}
         for field in self.FILE_FIELDS:
             content = str((file_contents or {}).get(field, ""))
@@ -50,7 +54,10 @@ class BackupPolicyService:
             else:
                 path.unlink(missing_ok=True)
                 paths[field] = None
+        paths["exclude_larger_than"] = exclude_larger_than or None
         policy = self.store.save_policy(repository_id, clean_name, clean_backup_path, paths, forget_id, policy_id)
+        if current:
+            self._remove_legacy_size_file(current.exclude_larger_than)
         if current and current.name != clean_name:
             self._remove_policy_files(current)
         self._write_script(policy)
@@ -61,7 +68,9 @@ class BackupPolicyService:
         policy = self.store.get_policy(policy_id)
         if not policy:
             raise ValueError("백업 정책을 찾을 수 없습니다.")
-        return {field: Path(value).read_text(encoding="utf-8") if (value := getattr(policy, field)) and Path(value).exists() else "" for field in self.FILE_FIELDS}
+        files = {field: Path(value).read_text(encoding="utf-8") if (value := getattr(policy, field)) and Path(value).exists() else "" for field in self.FILE_FIELDS}
+        files["exclude_larger_than"] = self._size_value(policy.exclude_larger_than)
+        return files
 
     def delete_policy(self, policy_id: int, confirmation: str) -> None:
         policy = self.store.get_policy(policy_id)
@@ -90,6 +99,7 @@ class BackupPolicyService:
         for field in self.FILE_FIELDS:
             if value := getattr(policy, field):
                 Path(value).unlink(missing_ok=True)
+        self._remove_legacy_size_file(policy.exclude_larger_than)
         (self.data_directory / "backup-scripts" / f"{policy.name}.cmd").unlink(missing_ok=True)
 
     def _write_script(self, policy: BackupPolicy) -> None:
@@ -97,11 +107,11 @@ class BackupPolicyService:
         if not repository:
             raise ValueError("저장소를 찾을 수 없습니다.")
         args = [self.restic_executable, "backup", "--json", "--repo", repository.directory, "--password-file", repository.key, "--tag", policy.name]
-        for field, flag in {"exclude": "--exclude-file", "iexclude": "--iexclude-file", "file_from": "--files-from", "exclude_larger_than": "--exclude-larger-than"}.items():
+        for field, flag in {"exclude": "--exclude-file", "iexclude": "--iexclude-file", "file_from": "--files-from"}.items():
             if value := getattr(policy, field):
-                option = Path(value).read_text(encoding="utf-8").strip() if field == "exclude_larger_than" else value
-                if option:
-                    args.extend((flag, option))
+                args.extend((flag, value))
+        if size := self._size_value(policy.exclude_larger_than):
+            args.extend(("--exclude-larger-than", size))
         args.append(policy.backup_path)
         commands = [args]
         forget = self.store.get_forget_policy(policy.forget_policy_id) if policy.forget_policy_id else None
@@ -115,8 +125,31 @@ class BackupPolicyService:
             commands.append(forget_args)
         quote = lambda value: f'"{str(value).replace(chr(34), chr(34) * 2)}"'
         log = (self.data_directory / "logs" / "%LOGDATE%.log").resolve()
+        progress = (self.data_directory / "backup-progress.jsonl").resolve()
         script = "@echo off\nfor /f %%i in ('powershell -NoProfile -Command \"Get-Date -Format yy-MM-dd\"') do set LOGDATE=%%i\n"
-        script += "".join(f"{' '.join(map(quote, command))} >> {quote(log)} 2>&1\n" for command in commands)
+        script += f"{' '.join(map(quote, commands[0]))} >> {quote(progress)} 2>&1\n"
+        script += "".join(f"{' '.join(map(quote, command))} >> {quote(log)} 2>&1\n" for command in commands[1:])
         directory = self.data_directory / "backup-scripts"
         directory.mkdir(parents=True, exist_ok=True)
         (directory / f"{policy.name}.cmd").write_text(script, encoding="utf-8")
+
+    def _size_value(self, value: str | None) -> str:
+        if not value:
+            return ""
+        if self.SIZE_PATTERN.fullmatch(value):
+            return value
+        path = Path(value)
+        if path.is_file():
+            return path.read_text(encoding="utf-8").strip()
+        return ""
+
+    def _remove_legacy_size_file(self, value: str | None) -> None:
+        if not value or self.SIZE_PATTERN.fullmatch(value):
+            return
+        path = Path(value)
+        expected = (self.data_directory / "exclude_larger_than").resolve()
+        try:
+            if path.resolve().parent == expected:
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass

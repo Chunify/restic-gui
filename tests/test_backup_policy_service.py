@@ -32,11 +32,14 @@ class BackupPolicyServiceTest(unittest.TestCase):
         self.assertEqual(Path(policy.exclude).read_text(encoding="utf-8"), "*.tmp")
         self.assertEqual(Path(policy.exclude), (self.root / "data" / "exclude" / "daily.dat").resolve())
         self.assertEqual(Path(policy.file_from), (self.root / "data" / "file_from" / "daily.dat").resolve())
-        self.assertEqual(Path(policy.exclude_larger_than), (self.root / "data" / "exclude_larger_than" / "daily.dat").resolve())
+        self.assertEqual(policy.exclude_larger_than, "10M")
+        self.assertFalse((self.root / "data" / "exclude_larger_than" / "daily.dat").exists())
         script = (self.root / "data" / "backup-scripts" / "daily.cmd").read_text(encoding="utf-8")
         self.assertIn('"--json"', script)
+        self.assertIn("backup-progress.jsonl", script)
         self.assertIn("--exclude-file", script)
         self.assertIn("--exclude-larger-than", script)
+        self.assertIn('"10M"', script)
         self.assertIn("--keep-daily", script)
         self.assertIn("--prune", script)
 
@@ -57,6 +60,26 @@ class BackupPolicyServiceTest(unittest.TestCase):
         service.save_policy(self.repository.id, "portable", "C:/Source", {}, None)
         script = (self.root / "data" / "backup-scripts" / "portable.cmd").read_text(encoding="utf-8")
         self.assertIn(f'"{executable}"', script)
+
+    def test_rejects_invalid_exclude_larger_than(self) -> None:
+        with self.assertRaisesRegex(ValueError, "exclude-larger-than"):
+            self.service.save_policy(
+                self.repository.id, "daily", "C:/Source",
+                {"exclude_larger_than": "1TB"}, None,
+            )
+
+    def test_reads_legacy_exclude_larger_than_file(self) -> None:
+        legacy = self.root / "data" / "exclude_larger_than" / "daily.dat"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("1T", encoding="utf-8")
+        policy = self.store.save_policy(
+            self.repository.id, "daily", "C:/Source",
+            {"exclude_larger_than": str(legacy)}, None,
+        )
+        self.assertEqual(self.service.read_policy_files(policy.id)["exclude_larger_than"], "1T")
+        self.service.regenerate_script(policy.id)
+        script = (self.root / "data" / "backup-scripts" / "daily.cmd").read_text(encoding="utf-8")
+        self.assertIn('"--exclude-larger-than" "1T"', script)
 
 
 if __name__ == "__main__":

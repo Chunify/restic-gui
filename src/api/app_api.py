@@ -4,7 +4,7 @@ from typing import Callable
 
 from src.services.backup_policy_service import BackupPolicyService
 from src.services.forget_policy_service import ForgetPolicyService
-from src.services.repository_service import RepositoryService
+from src.services.repository_service import ExistingRepositoryError, RepositoryService
 from src.services.restic_service import ResticError
 from src.services.snapshot_service import SnapshotService
 from src.services.log_service import LogService
@@ -48,12 +48,20 @@ class AppApi:
     def select_backup_file(self) -> dict[str, object]:
         return self._value(lambda: {"path": self.backup_file_picker()})
 
-    def create_repository(self, name: str, directory: str, password: str) -> dict[str, object]:
+    def create_repository(self, name: str, directory: str, password: str,
+                          password_confirmation: str,
+                          register_existing: bool = False) -> dict[str, object]:
         try:
             if not re.fullmatch(r"[A-Za-z0-9]+", name.strip()):
                 raise ValueError("저장소 이름은 영문과 숫자만 사용할 수 있습니다.")
-            repository = self.repository_service.create_repository(name, directory, password)
+            if password != password_confirmation:
+                raise ValueError("비밀번호가 일치하지 않습니다.")
+            repository = self.repository_service.create_repository(
+                name, directory, password, bool(register_existing)
+            )
             return self._ok({"repository": repository.to_dict()})
+        except ExistingRepositoryError as error:
+            return self._error(str(error), "existing_repository")
         except (ValueError, ResticError) as error:
             return self._error(str(error))
         except sqlite3.IntegrityError:
@@ -106,6 +114,15 @@ class AppApi:
             self._snapshots().save_contents(int(repository_id), snapshot_id, destination)
             return {"cancelled": False, "path": destination}
         return self._value(save)
+
+    def restore_snapshot(self, repository_id: int, snapshot_id: str) -> dict[str, object]:
+        def restore() -> dict[str, object]:
+            target = self.directory_picker()
+            if not target:
+                return {"cancelled": True}
+            self._snapshots().restore(int(repository_id), snapshot_id, target)
+            return {"cancelled": False, "path": target}
+        return self._value(restore)
 
     def list_logs(self) -> dict[str, object]:
         return self._value(lambda: {"logs": self._logs().list_logs()})
@@ -176,5 +193,8 @@ class AppApi:
         return {"ok": True, "data": data}
 
     @staticmethod
-    def _error(message: str) -> dict[str, object]:
-        return {"ok": False, "error": {"message": message}}
+    def _error(message: str, code: str | None = None) -> dict[str, object]:
+        error: dict[str, object] = {"message": message}
+        if code:
+            error["code"] = code
+        return {"ok": False, "error": error}

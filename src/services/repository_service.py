@@ -1,12 +1,18 @@
 import secrets
 import shutil
 import re
+import os
+from dataclasses import replace
 from pathlib import Path
 
 from src.models.repository import Repository
 from src.services.restic_service import ResticService
 from src.storage.repository_store import RepositoryStore
 from src.services.script_service import ScriptService
+
+
+class ExistingRepositoryError(ValueError):
+    """Raised when registration of an existing restic repository needs consent."""
 
 
 class RepositoryService:
@@ -21,9 +27,13 @@ class RepositoryService:
         self.restic_service = restic_service or ResticService()
 
     def list_repositories(self) -> list[Repository]:
-        return self.store.list_all()
+        return [
+            replace(repository, size_bytes=self._directory_size(repository.directory))
+            for repository in self.store.list_all()
+        ]
 
-    def create_repository(self, name: str, directory: str, password: str) -> Repository:
+    def create_repository(self, name: str, directory: str, password: str,
+                          register_existing: bool = False) -> Repository:
         clean_name = name.strip()
         clean_directory = directory.strip()
         if not clean_name:
@@ -35,14 +45,21 @@ class RepositoryService:
         if self.store.name_exists(clean_name):
             raise ValueError("이미 사용 중인 저장소 이름입니다.")
 
+        existing_repository = (Path(clean_directory) / "config").is_file()
+        if existing_repository and not register_existing:
+            raise ExistingRepositoryError("이미 리포지터리가 생성된 경로입니다. 등록하시겠습니까?")
+
         self.keys_directory.mkdir(parents=True, exist_ok=True)
         safe_name = re.sub(r"[^0-9A-Za-z가-힣._-]+", "_", clean_name).strip("._") or "repository"
         key_path = self._available_key_path(safe_name)
         key_path.write_text(secrets.token_urlsafe(48), encoding="utf-8")
         try:
-            self.restic_service.initialize_repository(
-                clean_directory, password, key_path.resolve()
-            )
+            if existing_repository:
+                self.restic_service.add_key(clean_directory, password, key_path.resolve())
+            else:
+                self.restic_service.initialize_repository(
+                    clean_directory, password, key_path.resolve()
+                )
             return self.store.add(clean_name, clean_directory, str(key_path.resolve()))
         except Exception:
             key_path.unlink(missing_ok=True)
@@ -63,7 +80,7 @@ class RepositoryService:
         Path(repository.key).unlink(missing_ok=True)
         data_directory = self.keys_directory.parent
         for policy in policies:
-            for field in ("exclude", "iexclude", "file_from", "exclude_larger_than"):
+            for field in ("exclude", "iexclude", "file_from"):
                 value = getattr(policy, field)
                 if value:
                     Path(value).unlink(missing_ok=True)
@@ -78,3 +95,17 @@ class RepositoryService:
             candidate = self.keys_directory / f"{base_name}-{index}.key"
             index += 1
         return candidate
+
+    @staticmethod
+    def _directory_size(directory: str) -> int:
+        total = 0
+        try:
+            for root, _directories, files in os.walk(directory, followlinks=False):
+                for name in files:
+                    try:
+                        total += os.stat(Path(root) / name, follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            return 0
+        return total

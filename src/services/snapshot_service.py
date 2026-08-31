@@ -24,6 +24,21 @@ class SnapshotService:
         contents = self.restic.snapshot_contents(repository.directory, repository.key, clean_id)
         Path(clean_destination).write_text(contents, encoding="utf-8")
 
+    def restore(self, repository_id: int, snapshot_id: str, target: str) -> None:
+        repository = self._repository(repository_id)
+        clean_id = str(snapshot_id).strip()
+        if not clean_id:
+            raise ValueError("스냅샷 ID가 필요합니다.")
+        clean_target = str(target).strip()
+        if not clean_target:
+            raise ValueError("복원할 폴더를 선택해 주세요.")
+        target_path = Path(clean_target)
+        if not target_path.is_dir():
+            raise ValueError("복원할 폴더를 찾을 수 없습니다.")
+        self.restic.restore_snapshot(
+            repository.directory, repository.key, clean_id, str(target_path)
+        )
+
     def _repository(self, repository_id: int):
         repository = self.store.get(repository_id)
         if not repository:

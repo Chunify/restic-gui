@@ -48,6 +48,8 @@ class NewRequirementsTest(unittest.TestCase):
         text = service.master_script.read_text(encoding="utf-8")
         self.assertIn('dir /b /a-d /on "%SCRIPTS_DIR%\\*.cmd"', text)
         self.assertIn('call "%SCRIPTS_DIR%\\%%F"', text)
+        self.assertIn("message_type.*status", text)
+        self.assertIn("backup-progress.jsonl", text)
         self.assertNotIn(str((scripts / "Alpha.cmd").resolve()), text)
         self.assertNotIn(str((scripts / "zeta.cmd").resolve()), text)
         self.assertEqual(calls[0][0][:2], ["cmd.exe", "/c"])
@@ -56,8 +58,8 @@ class NewRequirementsTest(unittest.TestCase):
 
     def test_manual_backup_reads_restic_json_progress(self) -> None:
         service = ScriptService(self.root)
-        log = service._today_log_path()
-        log.parent.mkdir(parents=True)
+        log = service.progress_file
+        log.parent.mkdir(parents=True, exist_ok=True)
         log.write_text(json.dumps({
             "message_type": "status", "percent_done": 0.42,
             "files_done": 4, "total_files": 10,
@@ -100,6 +102,30 @@ class NewRequirementsTest(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "권한.*관리자 권한"):
             service.save({"enabled": True, "interval_days": 1})
+
+
+    def test_configuration_can_delegate_scheduler_changes(self) -> None:
+        applied = []
+        service = ConfigurationService(
+            self.root, self.root / "master.cmd", scheduler_applier=applied.append
+        )
+
+        saved = service.save({"enabled": True, "interval_days": "2"})
+
+        self.assertEqual(applied, [saved])
+        self.assertEqual(service.load(), saved)
+
+    def test_configuration_is_not_saved_when_elevation_fails(self) -> None:
+        def fail(_values: dict[str, object]) -> None:
+            raise RuntimeError("관리자 권한 요청이 취소되었습니다.")
+
+        service = ConfigurationService(
+            self.root, self.root / "master.cmd", scheduler_applier=fail
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "취소"):
+            service.save({"enabled": True, "interval_days": 1})
+        self.assertFalse(service.path.exists())
 
 
 if __name__ == "__main__":

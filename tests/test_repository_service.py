@@ -9,10 +9,16 @@ from src.storage.repository_store import RepositoryStore
 class FakeResticService:
     def __init__(self, error: Exception | None = None) -> None:
         self.calls: list[tuple[str, str, Path]] = []
+        self.add_key_calls: list[tuple[str, str, Path]] = []
         self.error = error
 
     def initialize_repository(self, directory: str, password: str, key_path: Path) -> None:
         self.calls.append((directory, password, key_path))
+        if self.error:
+            raise self.error
+
+    def add_key(self, directory: str, password: str, key_path: Path) -> None:
+        self.add_key_calls.append((directory, password, key_path))
         if self.error:
             raise self.error
 
@@ -76,6 +82,47 @@ class RepositoryServiceTest(unittest.TestCase):
                 )
 
             self.assertEqual(second_restic.calls, [])
+
+    def test_existing_repository_requires_confirmation_then_adds_only_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repository_directory = root / "existing"
+            repository_directory.mkdir()
+            (repository_directory / "config").write_text("restic config", encoding="utf-8")
+            store = RepositoryStore(root / "app.db")
+            store.initialize()
+            restic = FakeResticService()
+            service = RepositoryService(store, root / "keys", restic)
+
+            with self.assertRaisesRegex(ValueError, "등록하시겠습니까"):
+                service.create_repository("기존", str(repository_directory), "secret")
+
+            created = service.create_repository(
+                "기존", str(repository_directory), "secret", register_existing=True
+            )
+
+            self.assertEqual(restic.calls, [])
+            self.assertEqual(restic.add_key_calls, [
+                (str(repository_directory), "secret", Path(created.key))
+            ])
+            self.assertEqual(store.list_all(), [created])
+
+    def test_repository_list_includes_directory_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repository_directory = root / "repository"
+            nested = repository_directory / "data"
+            nested.mkdir(parents=True)
+            (repository_directory / "config").write_bytes(b"1234")
+            (nested / "pack").write_bytes(b"123456")
+            store = RepositoryStore(root / "app.db")
+            store.initialize()
+            stored = store.add("저장소", str(repository_directory), str(root / "key"))
+
+            listed = RepositoryService(store, root / "keys", FakeResticService()).list_repositories()
+
+            self.assertEqual(listed[0].id, stored.id)
+            self.assertEqual(listed[0].size_bytes, 10)
 
 
 if __name__ == "__main__":

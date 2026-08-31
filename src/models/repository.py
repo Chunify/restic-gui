@@ -7,6 +7,7 @@ class Repository:
     name: str
     directory: str
     key: str
+    size_bytes: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)

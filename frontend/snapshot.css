@@ -51,6 +51,9 @@
 }
 
 .snapshot-action {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
   text-align: right;
   white-space: nowrap;
 }
