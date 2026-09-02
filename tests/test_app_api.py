@@ -64,6 +64,16 @@ class AppApiTest(unittest.TestCase):
         self.assertEqual(result["data"], {"cancelled": False, "path": "D:/Restore"})
         snapshot_service.restore.assert_called_once_with(1, "abcdef12", "D:/Restore")
 
+    def test_list_snapshots_passes_policy_tag(self) -> None:
+        snapshot_service = Mock()
+        snapshot_service.list_snapshots.return_value = []
+        self.api.snapshot_service = snapshot_service
+
+        result = self.api.list_snapshots(1, "daily")
+
+        self.assertTrue(result["ok"])
+        snapshot_service.list_snapshots.assert_called_once_with(1, "daily")
+
     def test_restore_snapshot_cancel_does_not_call_service(self) -> None:
         snapshot_service = Mock()
         self.api.snapshot_service = snapshot_service

@@ -33,6 +33,11 @@
   animation: none;
 }
 
+.progress-dialog.indeterminate .progress-bar {
+  width: 38% !important;
+  animation: backup-progress 1.25s ease-in-out infinite;
+}
+
 .progress-dialog button {
   margin-top: 24px;
 }
@@ -45,9 +50,15 @@
 }
 
 .progress-dialog .progress-detail,
+.progress-dialog .progress-scripts,
 .progress-dialog .progress-file {
   margin: 8px 0 0;
   font-size: 12px;
+}
+
+.progress-dialog .progress-scripts {
+  color: #24623f;
+  font-weight: 700;
 }
 
 .progress-file {

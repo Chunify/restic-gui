@@ -18,13 +18,9 @@ def data_root() -> Path:
     return resource_root() / "data"
 
 
-def restic_executable(data_directory: Path) -> str:
-    """Install and return the bundled restic binary, or fall back to PATH in source mode."""
-    bundled = resource_root() / "restic" / "restic.exe"
-    if not bundled.is_file():
-        return "restic"
-    installed = data_directory / "bin" / "restic.exe"
-    installed.parent.mkdir(parents=True, exist_ok=True)
-    if not installed.is_file() or installed.stat().st_size != bundled.stat().st_size:
-        shutil.copy2(bundled, installed)
-    return str(installed.resolve())
+def restic_executable(_data_directory: Path) -> str:
+    """Return the restic executable installed on PATH."""
+    installed = shutil.which("restic")
+    if installed is None:
+        raise FileNotFoundError("restic executable was not found")
+    return installed

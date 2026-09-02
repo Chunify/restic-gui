@@ -2,6 +2,7 @@ import secrets
 import shutil
 import re
 import os
+from typing import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,10 +22,12 @@ class RepositoryService:
         store: RepositoryStore,
         keys_directory: Path,
         restic_service: ResticService | None = None,
+        directory_opener: Callable[[str], None] | None = None,
     ) -> None:
         self.store = store
         self.keys_directory = keys_directory
         self.restic_service = restic_service or ResticService()
+        self.directory_opener = directory_opener or self._open_directory
 
     def list_repositories(self) -> list[Repository]:
         return [
@@ -87,6 +90,32 @@ class RepositoryService:
             (data_directory / "backup-scripts" / f"{policy.name}.cmd").unlink(missing_ok=True)
         self.store.delete(repository_id)
         ScriptService(data_directory).regenerate_master()
+
+    def prune_repository(self, repository_id: int) -> None:
+        repository = self._get_repository(repository_id)
+        self.restic_service.prune(repository.directory, repository.key)
+
+    def open_repository_directory(self, repository_id: int) -> None:
+        repository = self._get_repository(repository_id)
+        directory = Path(repository.directory)
+        if not directory.is_dir():
+            raise ValueError("저장소 폴더를 찾을 수 없습니다.")
+        try:
+            self.directory_opener(str(directory.resolve()))
+        except OSError as error:
+            raise RuntimeError(f"저장소 폴더를 열지 못했습니다. {error}") from error
+
+    def _get_repository(self, repository_id: int) -> Repository:
+        repository = self.store.get(repository_id)
+        if not repository:
+            raise ValueError("저장소를 찾을 수 없습니다.")
+        return repository
+
+    @staticmethod
+    def _open_directory(directory: str) -> None:
+        if os.name != "nt" or not hasattr(os, "startfile"):
+            raise OSError("Windows 탐색기를 사용할 수 없습니다.")
+        os.startfile(directory)  # type: ignore[attr-defined]
 
     def _available_key_path(self, base_name: str) -> Path:
         candidate = self.keys_directory / f"{base_name}.key"

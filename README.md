@@ -2,6 +2,9 @@
 
 Windows용 restic 데스크톱 GUI입니다.
 
+사용 전에 Windows에 restic을 설치해야 합니다. 설치되지 않은 상태에서 앱을
+실행하면 설치 안내를 표시하고 공식 Windows 설치 페이지를 엽니다.
+
 ## 실행
 
 ```powershell
@@ -22,10 +25,8 @@ PowerShell에서 다음 명령을 실행합니다.
 ```
 
 빌드 의존성을 이미 설치했다면 `.\scripts\build.ps1 -SkipInstall`을 사용할 수
-있습니다. 스크립트는 최신 Windows x64용 restic을 함께 포함하며, 결과물은
-`dist/restic-gui.exe` 단일 파일입니다. 이 파일만 복사해 실행할 수 있고 처음
-실행할 때 실행 파일과 같은 위치에 `data/` 폴더와 내장 restic이 생성됩니다.
-특정 버전을 포함하려면 `-ResticVersion 0.18.0`처럼 지정할 수 있습니다.
+있습니다. 결과물은 `dist/restic-gui.exe` 단일 파일입니다. restic은 실행 파일에
+포함되지 않으며, Windows PATH에서 설치된 `restic.exe`를 찾습니다.
 
 ## 주요 기능
 

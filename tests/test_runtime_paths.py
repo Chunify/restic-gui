@@ -24,8 +24,14 @@ class RuntimePathsTest(unittest.TestCase):
         with patch.object(sys, "_MEIPASS", str(bundle), create=True):
             self.assertEqual(resource_root(), bundle)
 
-    def test_source_mode_falls_back_to_path_restic(self) -> None:
-        self.assertEqual(restic_executable(Path("unused")), "restic")
+    @patch("src.runtime_paths.shutil.which", return_value="C:/Tools/restic.exe")
+    def test_source_mode_uses_path_restic(self, _which) -> None:
+        self.assertEqual(restic_executable(Path("unused")), "C:/Tools/restic.exe")
+
+    @patch("src.runtime_paths.shutil.which", return_value=None)
+    def test_missing_restic_raises_file_not_found(self, _which) -> None:
+        with self.assertRaises(FileNotFoundError):
+            restic_executable(Path("unused"))
 
 
 if __name__ == "__main__":

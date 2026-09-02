@@ -6,6 +6,8 @@ import uuid
 from ctypes import wintypes
 from pathlib import Path
 
+from src.services.windows_identity import current_windows_identity
+
 
 SEE_MASK_NOCLOSEPROCESS = 0x00000040
 SW_HIDE = 0
@@ -34,10 +36,16 @@ class SchedulerElevator:
 
     def apply(self, values: dict[str, object]) -> None:
         self.exchange_directory.mkdir(parents=True, exist_ok=True)
+        identity = current_windows_identity()
+        request_values = {
+            **values,
+            "_scheduler_user_id": identity.user_id,
+            "_scheduler_user_sid": identity.sid,
+        }
         identifier = uuid.uuid4().hex
         request_path = self.exchange_directory / f"request-{identifier}.json"
         result_path = self.exchange_directory / f"result-{identifier}.json"
-        request_path.write_text(json.dumps(values, ensure_ascii=False), encoding="utf-8")
+        request_path.write_text(json.dumps(request_values, ensure_ascii=False), encoding="utf-8")
         try:
             exit_code = self._run_elevated(request_path, result_path)
             result = self._read_result(result_path)

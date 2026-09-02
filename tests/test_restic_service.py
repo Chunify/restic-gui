@@ -1,6 +1,7 @@
 import subprocess
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,25 @@ from src.services.restic_service import ResticError, ResticService
 
 
 class ResticServiceTest(unittest.TestCase):
+    def test_reports_running_while_a_restic_command_is_active(self) -> None:
+        started = threading.Event()
+        release = threading.Event()
+
+        def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            started.set()
+            release.wait(timeout=2)
+            return subprocess.CompletedProcess(command, 0, "[]", "")
+
+        service = ResticService(runner=runner)
+        worker = threading.Thread(target=lambda: service.snapshots("C:/Repo", "C:/key"))
+        worker.start()
+        self.assertTrue(started.wait(timeout=1))
+        self.assertTrue(service.operation_status()["running"])
+        self.assertEqual(service.operation_status()["command"][1], "snapshots")
+        release.set()
+        worker.join(timeout=2)
+        self.assertFalse(service.operation_status()["running"])
+
     def test_initializes_with_password_then_adds_random_key(self) -> None:
         calls: list[tuple[list[str], dict[str, object]]] = []
 
@@ -70,6 +90,20 @@ class ResticServiceTest(unittest.TestCase):
         self.assertEqual(snapshots[0]["id"], "abcdef12")
         self.assertEqual(snapshots[0]["paths"], ["C:/Source"])
 
+    def test_lists_snapshots_filtered_by_tag(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            calls.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "[]", "")
+
+        ResticService(runner=runner).snapshots("C:/Repo", "C:/key", "daily")
+
+        self.assertEqual(calls, [[
+            "restic", "snapshots", "--json", "--repo", "C:/Repo",
+            "--password-file", "C:/key", "--tag", "daily",
+        ]])
+
     def test_large_snapshot_output_is_not_copied_to_log(self) -> None:
         output = json.dumps([{"id": "a" * 64, "payload": "x" * 20_000}])
 
@@ -97,8 +131,21 @@ class ResticServiceTest(unittest.TestCase):
         )
 
         self.assertEqual(calls, [[
-            "restic", "restore", "abcdef12", "--target", "D:/Restore",
+            "restic", "restore", "abcdef12", "--json", "--target", "D:/Restore",
             "--repo", "C:/Repo", "--password-file", "C:/key",
+        ]])
+
+    def test_prunes_repository(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            calls.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        ResticService(runner=runner).prune("C:/Repo", "C:/key")
+
+        self.assertEqual(calls, [[
+            "restic", "prune", "--repo", "C:/Repo", "--password-file", "C:/key",
         ]])
 
 

@@ -11,6 +11,7 @@ class FakeResticService:
         self.calls: list[tuple[str, str, Path]] = []
         self.add_key_calls: list[tuple[str, str, Path]] = []
         self.error = error
+        self.prune_calls: list[tuple[str, str]] = []
 
     def initialize_repository(self, directory: str, password: str, key_path: Path) -> None:
         self.calls.append((directory, password, key_path))
@@ -19,6 +20,11 @@ class FakeResticService:
 
     def add_key(self, directory: str, password: str, key_path: Path) -> None:
         self.add_key_calls.append((directory, password, key_path))
+        if self.error:
+            raise self.error
+
+    def prune(self, directory: str, key: str) -> None:
+        self.prune_calls.append((directory, key))
         if self.error:
             raise self.error
 
@@ -123,6 +129,36 @@ class RepositoryServiceTest(unittest.TestCase):
 
             self.assertEqual(listed[0].id, stored.id)
             self.assertEqual(listed[0].size_bytes, 10)
+
+    def test_prunes_repository_with_its_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            store = RepositoryStore(root / "app.db")
+            store.initialize()
+            repository = store.add("저장소", str(root / "repository"), str(root / "key"))
+            restic = FakeResticService()
+            service = RepositoryService(store, root / "keys", restic)
+
+            service.prune_repository(repository.id)
+
+            self.assertEqual(restic.prune_calls, [(repository.directory, repository.key)])
+
+    def test_opens_repository_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            repository_directory = root / "repository"
+            repository_directory.mkdir()
+            store = RepositoryStore(root / "app.db")
+            store.initialize()
+            repository = store.add("저장소", str(repository_directory), str(root / "key"))
+            opened: list[str] = []
+            service = RepositoryService(
+                store, root / "keys", FakeResticService(), opened.append
+            )
+
+            service.open_repository_directory(repository.id)
+
+            self.assertEqual(opened, [str(repository_directory.resolve())])
 
 
 if __name__ == "__main__":

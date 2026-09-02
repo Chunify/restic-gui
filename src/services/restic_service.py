@@ -1,6 +1,8 @@
 import json
 import subprocess
 import tempfile
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Sequence
@@ -19,6 +21,30 @@ class ResticService:
         self.executable = executable
         self.runner = runner
         self.logs_directory = logs_directory
+        self._command_lock = threading.RLock()
+        self._state_lock = threading.Lock()
+        self._active_commands = 0
+        self._current_command: list[str] = []
+
+    def operation_status(self) -> dict[str, object]:
+        with self._state_lock:
+            return {"running": self._active_commands > 0,
+                    "command": list(self._current_command)}
+
+    @contextmanager
+    def _tracked_command(self, command: Sequence[str]):
+        with self._state_lock:
+            self._active_commands += 1
+        try:
+            with self._command_lock:
+                with self._state_lock:
+                    self._current_command = list(command)
+                yield
+        finally:
+            with self._state_lock:
+                self._active_commands -= 1
+                if self._active_commands == 0:
+                    self._current_command = []
 
     def initialize_repository(self, directory: str, password: str, key_path: Path) -> None:
         with tempfile.TemporaryDirectory(prefix="restic-gui-") as temporary_directory:
@@ -37,8 +63,12 @@ class ResticService:
         self._run("key", "add", "--repo", directory, "--password-file", str(password_path),
                   "--new-password-file", str(key_path))
 
-    def snapshots(self, directory: str, key: str) -> list[dict[str, object]]:
-        result = self._run("snapshots", "--json", "--repo", directory, "--password-file", key)
+    def snapshots(self, directory: str, key: str,
+                  tag: str | None = None) -> list[dict[str, object]]:
+        arguments = ["snapshots", "--json", "--repo", directory, "--password-file", key]
+        if tag:
+            arguments.extend(("--tag", tag))
+        result = self._run(*arguments)
         try:
             values = json.loads(result.stdout or "[]")
         except json.JSONDecodeError as error:
@@ -52,16 +82,26 @@ class ResticService:
                          "--password-file", key).stdout or ""
 
     def restore_snapshot(self, directory: str, key: str, snapshot_id: str,
-                         target: str) -> None:
-        self._run("restore", snapshot_id, "--target", target, "--repo", directory,
-                  "--password-file", key)
+                         target: str,
+                         progress_callback: Callable[[dict[str, object]], None] | None = None) -> None:
+        arguments = ("restore", snapshot_id, "--json", "--target", target,
+                     "--repo", directory, "--password-file", key)
+        if progress_callback is None:
+            self._run(*arguments)
+            return
+        with self._tracked_command((self.executable, *arguments)):
+            self._run_json_stream(arguments, progress_callback)
+
+    def prune(self, directory: str, key: str) -> None:
+        self._run("prune", "--repo", directory, "--password-file", key)
 
     def _run(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         command: Sequence[str] = (self.executable, *arguments)
         try:
-            result = self.runner(command, check=True, capture_output=True, text=True,
-                                 encoding="utf-8", errors="replace",
-                                 **hidden_window_options())
+            with self._tracked_command(command):
+                result = self.runner(command, check=True, capture_output=True, text=True,
+                                     encoding="utf-8", errors="replace",
+                                     **hidden_window_options())
         except FileNotFoundError as error:
             self._log(command, "restic 실행 파일을 찾을 수 없습니다.\n")
             raise ResticError("restic 실행 파일을 찾을 수 없습니다. restic을 설치하고 PATH를 확인해 주세요.") from error
@@ -74,6 +114,35 @@ class ResticService:
             output = f"[출력 {self._human_size(len(result.stdout.encode('utf-8')))} 생략]\n{result.stderr or ''}"
         self._log(command, self._compact_output(output))
         return result
+
+    def _run_json_stream(self, arguments: Sequence[str],
+                         callback: Callable[[dict[str, object]], None]) -> None:
+        command = (self.executable, *arguments)
+        output: list[str] = []
+        try:
+            process = subprocess.Popen(
+                command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding="utf-8", errors="replace",
+                **hidden_window_options(),
+            )
+        except FileNotFoundError as error:
+            self._log(command, "restic 실행 파일을 찾을 수 없습니다.\n")
+            raise ResticError("restic 실행 파일을 찾을 수 없습니다. restic을 설치하고 PATH를 확인해 주세요.") from error
+        assert process.stdout is not None
+        for line in process.stdout:
+            output.append(line)
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(event, dict):
+                callback(event)
+        return_code = process.wait()
+        combined = self._compact_output("".join(output))
+        self._log(command, combined)
+        if return_code:
+            detail = combined.strip()
+            raise ResticError(f"restic 복원에 실패했습니다.{f' {detail}' if detail else ''}")
 
     @staticmethod
     def _compact_output(output: str, limit: int = 16_384) -> str:

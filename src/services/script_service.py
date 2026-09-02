@@ -36,9 +36,12 @@ class ScriptService:
             'for /f %%i in (\'powershell -NoProfile -Command "Get-Date -Format yy-MM-dd"\') do set LOGDATE=%%i',
             'set "LOG_FILE=%~dp0logs\\%LOGDATE%.log"',
             'if not exist "%~dp0logs" mkdir "%~dp0logs"',
+            'if exist "%~dp0configuration.json" powershell -NoProfile -Command "$c=Get-Content -Raw -LiteralPath \'%~dp0configuration.json\' | ConvertFrom-Json; $d=[int]$c.log_retention_days; if ($d -gt 0) { Get-ChildItem -LiteralPath \'%~dp0logs\' -Filter \'*.log\' -File | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$d) } | Remove-Item -Force }"',
             'if exist "%PROGRESS_FILE%" del /q "%PROGRESS_FILE%"',
             'for /f "delims=" %%F in (\'dir /b /a-d /on "%SCRIPTS_DIR%\\*.cmd" 2^>nul\') do (',
+            '    >>"%PROGRESS_FILE%" echo {"message_type":"script_start","script_name":"%%~nF"}',
             '    call "%SCRIPTS_DIR%\\%%F"',
+            '    >>"%PROGRESS_FILE%" echo {"message_type":"script_complete","script_name":"%%~nF"}',
             ")",
             'if exist "%PROGRESS_FILE%" powershell -NoProfile -Command "Get-Content -LiteralPath \'%PROGRESS_FILE%\' | Where-Object { $_ -notmatch \'message_type.*status\' } | Add-Content -LiteralPath \'%LOG_FILE%\' -Encoding utf8"',
             'if exist "%PROGRESS_FILE%" del /q "%PROGRESS_FILE%"',
@@ -64,10 +67,13 @@ class ScriptService:
                 raise RuntimeError("수동 백업이 이미 실행 중입니다.")
             self.progress_file.unlink(missing_ok=True)
             self._log_offset = 0
+            total_scripts = len(list((self.data_directory / "backup-scripts").glob("*.cmd")))
             self._backup_state = {
                 "running": True, "status": "running", "percent": 0.0,
                 "files_done": 0, "total_files": 0, "bytes_done": 0,
-                "total_bytes": 0, "current_files": [],
+                "total_bytes": 0, "current_files": [], "total_scripts": total_scripts,
+                "scripts_completed": 0, "scripts_remaining": total_scripts,
+                "current_script": None,
             }
         threading.Thread(target=self._run_in_background, daemon=True).start()
         return dict(self._backup_state)
@@ -87,7 +93,12 @@ class ScriptService:
         else:
             self._read_progress_log()
             with self._state_lock:
-                self._backup_state.update(running=False, status="completed", percent=1.0)
+                total_scripts = int(self._backup_state.get("total_scripts") or 0)
+                self._backup_state.update(
+                    running=False, status="completed", percent=1.0,
+                    scripts_completed=total_scripts, scripts_remaining=0,
+                    current_script=None,
+                )
 
     def _today_log_path(self) -> Path:
         return self.data_directory / "logs" / f"{datetime.now():%y-%m-%d}.log"
@@ -110,7 +121,22 @@ class ScriptService:
                 event = json.loads(line)
             except (json.JSONDecodeError, TypeError):
                 continue
-            if event.get("message_type") != "status":
+            message_type = event.get("message_type")
+            if message_type == "script_start":
+                with self._state_lock:
+                    self._backup_state["current_script"] = str(event.get("script_name") or "")
+                continue
+            if message_type == "script_complete":
+                with self._state_lock:
+                    total = int(self._backup_state.get("total_scripts") or 0)
+                    completed = min(total, int(self._backup_state.get("scripts_completed") or 0) + 1)
+                    self._backup_state.update(
+                        scripts_completed=completed,
+                        scripts_remaining=max(0, total - completed),
+                        current_script=None,
+                    )
+                continue
+            if message_type != "status":
                 continue
             with self._state_lock:
                 self._backup_state.update(

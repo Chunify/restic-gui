@@ -72,6 +72,12 @@ class AppApi:
     def delete_repository(self, repository_id: int, confirmation: str) -> dict[str, object]:
         return self._action(lambda: self.repository_service.delete_repository(int(repository_id), confirmation))
 
+    def prune_repository(self, repository_id: int) -> dict[str, object]:
+        return self._action(lambda: self.repository_service.prune_repository(int(repository_id)))
+
+    def open_repository_directory(self, repository_id: int) -> dict[str, object]:
+        return self._action(lambda: self.repository_service.open_repository_directory(int(repository_id)))
+
     def list_backup_policies(self, repository_id: int) -> dict[str, object]:
         return self._value(lambda: {"policies": [item.to_dict() for item in self.policy_service.list_policies(int(repository_id))]})
 
@@ -103,8 +109,10 @@ class AppApi:
     def delete_forget_policy(self, policy_id: int, confirmation: str) -> dict[str, object]:
         return self._action(lambda: self._forget().delete_policy(int(policy_id), confirmation))
 
-    def list_snapshots(self, repository_id: int) -> dict[str, object]:
-        return self._value(lambda: {"snapshots": self._snapshots().list_snapshots(int(repository_id))})
+    def list_snapshots(self, repository_id: int, tag: str | None = None) -> dict[str, object]:
+        return self._value(lambda: {
+            "snapshots": self._snapshots().list_snapshots(int(repository_id), tag)
+        })
 
     def save_snapshot_contents(self, repository_id: int, snapshot_id: str) -> dict[str, object]:
         def save() -> dict[str, object]:
@@ -124,6 +132,18 @@ class AppApi:
             return {"cancelled": False, "path": target}
         return self._value(restore)
 
+    def start_snapshot_restore(self, repository_id: int, snapshot_id: str) -> dict[str, object]:
+        def start() -> dict[str, object]:
+            target = self.directory_picker()
+            if not target:
+                return {"cancelled": True}
+            restore = self._snapshots().start_restore(int(repository_id), snapshot_id, target)
+            return {"cancelled": False, "restore": restore}
+        return self._value(start)
+
+    def get_snapshot_restore_status(self) -> dict[str, object]:
+        return self._value(lambda: {"restore": self._snapshots().restore_status()})
+
     def list_logs(self) -> dict[str, object]:
         return self._value(lambda: {"logs": self._logs().list_logs()})
 
@@ -137,7 +157,10 @@ class AppApi:
         return self._action(self._logs().delete_all)
 
     def get_configuration(self) -> dict[str, object]:
-        return self._value(lambda: {"configuration": self._configuration().load()})
+        return self._value(lambda: {
+            "configuration": self._configuration().load(),
+            "scheduler": self._configuration().details(),
+        })
 
     def save_configuration(self, values: dict[str, object]) -> dict[str, object]:
         return self._value(lambda: {"configuration": self._configuration().save(values)})

@@ -1,6 +1,8 @@
 import json
 import os
 import sys
+import ctypes
+import webbrowser
 from pathlib import Path
 
 import webview
@@ -13,10 +15,24 @@ from src.services.restic_service import ResticService
 from src.services.snapshot_service import SnapshotService
 from src.services.log_service import LogService
 from src.services.configuration_service import ConfigurationService
-from src.services.script_service import ScriptService
 from src.services.scheduler_elevation import SchedulerElevator
+from src.services.script_service import ScriptService
 from src.storage.repository_store import RepositoryStore
 from src.runtime_paths import data_root, resource_root, restic_executable
+
+
+RESTIC_INSTALLATION_URL = "https://restic.readthedocs.io/en/latest/020_installation.html#windows"
+
+
+def show_missing_restic_message() -> None:
+    message = (
+        "restic이 설치되어 있지 않습니다.\n\n"
+        "restic을 설치한 후 애플리케이션을 다시 실행해 주세요.\n"
+        "확인을 누르면 Windows 설치 안내 페이지가 열립니다."
+    )
+    if os.name == "nt":
+        ctypes.windll.user32.MessageBoxW(0, message, "restic 설치 필요", 0x30)
+    webbrowser.open(RESTIC_INSTALLATION_URL)
 
 
 def run_scheduler_helper(request_path: Path, result_path: Path) -> int:
@@ -40,7 +56,11 @@ def run_scheduler_helper(request_path: Path, result_path: Path) -> int:
 def main() -> None:
     resources = resource_root()
     data_directory = data_root()
-    restic_path = restic_executable(data_directory)
+    try:
+        restic_path = restic_executable(data_directory)
+    except FileNotFoundError:
+        show_missing_restic_message()
+        return
     store = RepositoryStore(data_directory / "restic-gui.db")
     store.initialize()
     window_holder: dict[str, webview.Window] = {}
@@ -71,19 +91,30 @@ def main() -> None:
     policy_service.regenerate_all_scripts()
     script_service = ScriptService(data_directory)
     script_service.regenerate_master()
+    snapshot_service = SnapshotService(store, restic)
+    scheduler_elevator = SchedulerElevator(data_directory)
     api = AppApi(service, policy_service, select_directory, ForgetPolicyService(store),
-                 SnapshotService(store, restic), select_backup_path, select_backup_file,
+                 snapshot_service, select_backup_path, select_backup_file,
                  save_file, LogService(data_directory / "logs"),
                  ConfigurationService(
-                     data_directory, script_service.master_script,
-                     scheduler_applier=SchedulerElevator(data_directory).apply,
+                     data_directory,
+                     script_service.master_script,
+                     scheduler_applier=scheduler_elevator.apply,
                  ),
                  script_service)
     window = webview.create_window(
         "restic-gui", str(resources / "frontend" / "index.html"), js_api=api,
-        width=1120, height=720, min_size=(760, 540),
+        width=1360, height=720, min_size=(760, 540),
     )
     window_holder["window"] = window
+    def prevent_close_during_restic_operation() -> bool:
+        return not (
+            bool(restic.operation_status().get("running"))
+            or bool(snapshot_service.restore_status().get("running"))
+            or bool(script_service.manual_backup_status().get("running"))
+        )
+
+    window.events.closing += prevent_close_during_restic_operation
     webview_storage = Path(os.environ.get("LOCALAPPDATA", data_directory)) / "restic-gui" / "webview"
     webview_storage.mkdir(parents=True, exist_ok=True)
     webview.start(storage_path=str(webview_storage))
