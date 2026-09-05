@@ -83,12 +83,37 @@ class ResticServiceTest(unittest.TestCase):
         def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
             output = json.dumps([{"id": "abcdef123456", "short_id": "abcdef12",
                                   "time": "2026-08-30T10:00:00Z", "tags": ["daily"],
-                                  "paths": ["C:/Source"]}])
+                                  "paths": ["C:/Source"],
+                                  "summary": {"total_bytes_processed": 123456}}])
             return subprocess.CompletedProcess(command, 0, output, "")
 
         snapshots = ResticService(runner=runner).snapshots("C:/Repo", "C:/key")
         self.assertEqual(snapshots[0]["id"], "abcdef12")
         self.assertEqual(snapshots[0]["paths"], ["C:/Source"])
+        self.assertEqual(snapshots[0]["size_bytes"], 123456)
+
+    def test_snapshot_without_backup_summary_has_unknown_size(self) -> None:
+        def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            output = json.dumps([{"id": "abcdef123456", "short_id": "abcdef12"}])
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        snapshots = ResticService(runner=runner).snapshots("C:/Repo", "C:/key")
+
+        self.assertIsNone(snapshots[0]["size_bytes"])
+
+    def test_lists_newest_snapshots_first(self) -> None:
+        def runner(command: list[str], **options: object) -> subprocess.CompletedProcess[str]:
+            output = json.dumps([
+                {"id": "old", "short_id": "old", "time": "2026-08-29T10:00:00Z"},
+                {"id": "new", "short_id": "new", "time": "2026-08-31T10:00:00Z"},
+                {"id": "middle", "short_id": "middle", "time": "2026-08-30T10:00:00Z"},
+            ])
+            return subprocess.CompletedProcess(command, 0, output, "")
+
+        snapshots = ResticService(runner=runner).snapshots("C:/Repo", "C:/key")
+
+        self.assertEqual([snapshot["id"] for snapshot in snapshots],
+                         ["new", "middle", "old"])
 
     def test_lists_snapshots_filtered_by_tag(self) -> None:
         calls: list[list[str]] = []

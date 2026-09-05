@@ -44,6 +44,12 @@
   white-space: nowrap;
 }
 
+.snapshot-size {
+  color: #304039 !important;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .snapshot-paths {
   min-width: 220px;
   white-space: pre-line;

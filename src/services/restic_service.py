@@ -73,9 +73,23 @@ class ResticService:
             values = json.loads(result.stdout or "[]")
         except json.JSONDecodeError as error:
             raise ResticError("스냅샷 목록을 해석할 수 없습니다.") from error
-        return [{"id": item.get("short_id") or str(item.get("id", ""))[:8],
-                 "snapshot_id": item.get("id", ""), "time": item.get("time", ""),
-                 "tags": item.get("tags", []), "paths": item.get("paths", [])} for item in values]
+        snapshots = [{"id": item.get("short_id") or str(item.get("id", ""))[:8],
+                      "snapshot_id": item.get("id", ""), "time": item.get("time", ""),
+                      "tags": item.get("tags", []), "paths": item.get("paths", []),
+                      "size_bytes": self._snapshot_size(item)}
+                     for item in values]
+        return sorted(snapshots, key=lambda snapshot: str(snapshot["time"]), reverse=True)
+
+    @staticmethod
+    def _snapshot_size(snapshot: dict[str, object]) -> int | None:
+        """Return the logical source size recorded when the snapshot was created."""
+        summary = snapshot.get("summary")
+        if not isinstance(summary, dict):
+            return None
+        size = summary.get("total_bytes_processed")
+        if isinstance(size, bool) or not isinstance(size, (int, float)) or size < 0:
+            return None
+        return int(size)
 
     def snapshot_contents(self, directory: str, key: str, snapshot_id: str) -> str:
         return self._run("ls", snapshot_id, "--long", "--repo", directory,
