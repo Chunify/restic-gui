@@ -1,6 +1,7 @@
 import json
+import re
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -17,6 +18,7 @@ SCHEDULER_PERMISSION_MESSAGE = (
 class ConfigurationService:
     TASK_NAME = "ResticGUIAutoTask"
     DEFAULTS = {"enabled": False, "run_at_startup": False, "interval_days": 1,
+                "run_time": "03:00",
                 "run_when_idle": False, "log_retention_days": 30}
 
     def __init__(self, data_directory: Path, master_script: Path,
@@ -29,6 +31,10 @@ class ConfigurationService:
         self.runner = runner
         self.scheduler_applier = scheduler_applier
         self.identity_provider = identity_provider or current_windows_identity
+
+    @property
+    def scheduler_launcher(self) -> Path:
+        return self.data_directory / "backup-scheduler-launcher.vbs"
 
     @staticmethod
     def _task_name_for_sid(sid: str) -> str:
@@ -62,6 +68,9 @@ class ConfigurationService:
             raise ValueError("자동 실행 주기는 숫자여야 합니다.") from None
         if interval < 1:
             raise ValueError("자동 실행 주기는 1일 이상이어야 합니다.")
+        run_time = str(values.get("run_time", self.DEFAULTS["run_time"])).strip()
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", run_time):
+            raise ValueError("자동 실행 시각은 00:00부터 23:59 사이여야 합니다.")
         try:
             log_retention_days = int(values.get("log_retention_days", 30))
         except (TypeError, ValueError):
@@ -69,7 +78,8 @@ class ConfigurationService:
         if log_retention_days < 1:
             raise ValueError("로그 보관 기간은 1일 이상이어야 합니다.")
         clean = {"enabled": enabled, "run_at_startup": bool(values.get("run_at_startup")),
-                 "interval_days": interval, "run_when_idle": bool(values.get("run_when_idle")),
+                 "interval_days": interval, "run_time": run_time,
+                 "run_when_idle": bool(values.get("run_when_idle")),
                  "log_retention_days": log_retention_days}
         try:
             if self.scheduler_applier is not None:
@@ -168,13 +178,15 @@ class ConfigurationService:
             self._delete(identity=identity)
 
     def _register(self, values: dict[str, object], identity: WindowsIdentity) -> None:
+        self._write_scheduler_launcher()
         if self.runner is None:
             self._register_with_pywin32(values, identity)
             return
         task_name = self._task_name_for_sid(identity.sid)
-        command = f'cmd.exe /c "{self.master_script.resolve()}"'
+        command = f'wscript.exe //B //NoLogo "{self.scheduler_launcher.resolve()}"'
         self._run(["schtasks", "/Create", "/TN", task_name, "/TR", command,
                    "/SC", "DAILY", "/MO", str(values["interval_days"]),
+                   "/ST", str(values["run_time"]),
                    "/RU", identity.user_id, "/IT", "/F"])
         if values["run_at_startup"]:
             self._run(["schtasks", "/Create", "/TN", f"{task_name}AtStartup", "/TR", command,
@@ -187,6 +199,25 @@ class ConfigurationService:
             script = (f"$s=New-ScheduledTaskSettingsSet -RunOnlyIfIdle; "
                       f"Set-ScheduledTask -TaskName '{task_name}' -Settings $s | Out-Null")
             self._run(["powershell", "-NoProfile", "-Command", script])
+
+    def _write_scheduler_launcher(self) -> None:
+        master = str(self.master_script.resolve()).replace('"', '""')
+        content = (
+            'Set shell = CreateObject("WScript.Shell")\n'
+            f'shell.Run "cmd.exe /d /c " & Chr(34) & "{master}" & Chr(34), 0, True\n'
+        )
+        self.scheduler_launcher.parent.mkdir(parents=True, exist_ok=True)
+        # Windows Script Host reliably decodes UTF-16, including non-ASCII paths.
+        self.scheduler_launcher.write_text(content, encoding="utf-16")
+
+    @staticmethod
+    def _next_start_boundary(run_time: object, now: datetime | None = None) -> str:
+        current = now or datetime.now()
+        hour, minute = (int(part) for part in str(run_time).split(":"))
+        boundary = current.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if boundary <= current:
+            boundary += timedelta(days=1)
+        return boundary.isoformat()
 
     def _delete(self, name: str | None = None,
                 identity: WindowsIdentity | None = None) -> None:
@@ -249,13 +280,15 @@ class ConfigurationService:
             task.Settings.RunOnlyIfIdle = bool(values["run_when_idle"])
             daily = task.Triggers.Create(2)  # TASK_TRIGGER_DAILY
             daily.DaysInterval = int(values["interval_days"])
-            daily.StartBoundary = datetime.now().replace(microsecond=0).isoformat()
+            daily.StartBoundary = self._next_start_boundary(
+                values.get("run_time", self.DEFAULTS["run_time"])
+            )
             if values["run_at_startup"]:
                 logon = task.Triggers.Create(9)  # TASK_TRIGGER_LOGON
                 logon.UserId = identity.user_id
             action = task.Actions.Create(0)  # TASK_ACTION_EXEC
-            action.Path = "cmd.exe"
-            action.Arguments = f'/c "{self.master_script.resolve()}"'
+            action.Path = "wscript.exe"
+            action.Arguments = f'//B //NoLogo "{self.scheduler_launcher.resolve()}"'
             task_name = self._task_name_for_sid(identity.sid)
             # TASK_LOGON_INTERACTIVE_TOKEN does not use a password.  Passing an
             # empty BSTR is not the same as an empty COM VARIANT: Windows treats

@@ -2,6 +2,7 @@ import subprocess
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from src.services.configuration_service import ConfigurationService
@@ -119,14 +120,21 @@ class NewRequirementsTest(unittest.TestCase):
         )
         saved = service.save({"enabled": True, "run_at_startup": True,
                               "interval_days": "3", "run_when_idle": True,
-                              "log_retention_days": "14"})
+                              "run_time": "22:35", "log_retention_days": "14"})
         self.assertEqual(saved["interval_days"], 3)
+        self.assertEqual(saved["run_time"], "22:35")
         self.assertEqual(saved["log_retention_days"], 14)
         self.assertEqual(service.load(), saved)
         self.assertTrue(any(call[0][0] == "schtasks" and "/Create" in call[0] for call in calls))
         create = next(call[0] for call in calls if call[0][0] == "schtasks" and "/Create" in call[0])
         self.assertIn("ResticGUIAutoTask-S-1-5-21-1000", create)
         self.assertEqual(create[create.index("/RU") + 1], "TEST\\mint")
+        self.assertEqual(create[create.index("/ST") + 1], "22:35")
+        self.assertIn("wscript.exe", create[create.index("/TR") + 1])
+        self.assertNotIn("cmd.exe", create[create.index("/TR") + 1])
+        launcher = self.root / "backup-scheduler-launcher.vbs"
+        self.assertTrue(launcher.exists())
+        self.assertIn("cmd.exe /d /c", launcher.read_text(encoding="utf-16"))
         startup = next(
             call[0] for call in calls
             if call[0][0] == "schtasks" and "/Create" in call[0]
@@ -141,6 +149,9 @@ class NewRequirementsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "로그 보관 기간"):
             service.save({"enabled": True, "interval_days": 1,
                           "log_retention_days": 0})
+        with self.assertRaisesRegex(ValueError, "자동 실행 시각"):
+            service.save({"enabled": True, "interval_days": 1,
+                          "run_time": "24:00"})
 
     def test_configuration_reports_scheduler_permission_error(self) -> None:
         def runner(command: list[str], **options: object):
@@ -242,6 +253,8 @@ class NewRequirementsTest(unittest.TestCase):
         self.assertIsNone(folder.registration[4])
         self.assertEqual(folder.registration[5], 3)
         self.assertEqual(scheduler.task.Principal.UserId, "TEST\\mint")
+        self.assertEqual(scheduler.task.Actions.created[0].Path, "wscript.exe")
+        self.assertIn("//B //NoLogo", scheduler.task.Actions.created[0].Arguments)
 
     def test_pywin32_startup_option_uses_account_logon_trigger(self) -> None:
         service = ConfigurationService(
@@ -262,6 +275,13 @@ class NewRequirementsTest(unittest.TestCase):
         logon = scheduler.task.Triggers.created[1]
         self.assertEqual(scheduler.task.Triggers.kinds, [2, 9])
         self.assertEqual(logon.UserId, "TEST\\mint")
+
+    def test_daily_trigger_starts_at_configured_future_time(self) -> None:
+        boundary = ConfigurationService._next_start_boundary(
+            "06:30", datetime(2026, 9, 11, 7, 0)
+        )
+
+        self.assertEqual(boundary, "2026-09-12T06:30:00")
 
 
 class _FakeScheduler:
