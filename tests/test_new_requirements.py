@@ -164,7 +164,7 @@ class NewRequirementsTest(unittest.TestCase):
             identity_provider=lambda: TEST_IDENTITY,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "권한.*관리자 권한"):
+        with self.assertRaisesRegex(RuntimeError, "현재 Windows 계정.*권한"):
             service.save({"enabled": True, "interval_days": 1})
 
 
@@ -179,15 +179,15 @@ class NewRequirementsTest(unittest.TestCase):
         self.assertEqual(applied, [saved])
         self.assertEqual(service.load(), saved)
 
-    def test_configuration_is_not_saved_when_elevation_fails(self) -> None:
+    def test_configuration_is_not_saved_when_scheduler_apply_fails(self) -> None:
         def fail(_values: dict[str, object]) -> None:
-            raise RuntimeError("관리자 권한 요청이 취소되었습니다.")
+            raise RuntimeError("작업 등록이 거부되었습니다.")
 
         service = ConfigurationService(
             self.root, self.root / "master.cmd", scheduler_applier=fail
         )
 
-        with self.assertRaisesRegex(RuntimeError, "취소"):
+        with self.assertRaisesRegex(RuntimeError, "거부"):
             service.save({"enabled": True, "interval_days": 1})
         self.assertFalse(service.path.exists())
         scheduler_log = (self.root / "logs" / "scheduler.log").read_text(encoding="utf-8")

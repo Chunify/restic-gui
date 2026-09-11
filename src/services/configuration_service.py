@@ -10,8 +10,8 @@ from src.services.windows_identity import WindowsIdentity, current_windows_ident
 
 
 SCHEDULER_PERMISSION_MESSAGE = (
-    "Windows 작업 스케줄러 등록 권한이 없습니다. "
-    "프로그램을 관리자 권한으로 실행한 뒤 다시 시도해 주세요."
+    "현재 Windows 계정에 작업 스케줄러 등록 권한이 없습니다. "
+    "계정의 작업 스케줄러 권한을 확인해 주세요."
 )
 
 

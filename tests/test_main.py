@@ -38,20 +38,18 @@ class MainWiringTest(unittest.TestCase):
     @patch.dict(os.environ, {"LOCALAPPDATA": "data"})
     @patch("src.main.webview.start")
     @patch("src.main.webview.create_window")
-    @patch("src.main.SchedulerElevator")
     @patch("src.main.ScriptService")
     @patch("src.main.RepositoryStore")
     @patch("src.main.restic_executable", return_value="restic")
     @patch("src.main.data_root", return_value=Path("data"))
     @patch("src.main.resource_root", return_value=Path("resources"))
-    def test_configuration_changes_use_elevated_scheduler_helper(
+    def test_configuration_changes_use_current_user_directly(
         self,
         _resource_root: Mock,
         _data_root: Mock,
         _restic_executable: Mock,
         repository_store: Mock,
         script_service: Mock,
-        scheduler_elevator: Mock,
         create_window: Mock,
         _start: Mock,
     ) -> None:
@@ -66,10 +64,7 @@ class MainWiringTest(unittest.TestCase):
         main.main()
 
         api = create_window.call_args.kwargs["js_api"]
-        self.assertIs(
-            api.configuration_service.scheduler_applier,
-            scheduler_elevator.return_value.apply,
-        )
+        self.assertIsNone(api.configuration_service.scheduler_applier)
         repository_store.return_value.initialize.assert_called_once_with()
 
 
